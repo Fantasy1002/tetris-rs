@@ -36,23 +36,36 @@ fn run_game() -> io::Result<u32> {
     let mut renderer = Renderer::new()?;
     let mut last_drop = Instant::now();
     let mut last_render = Instant::now();
+    // Flag: drop-timer nach Hard Drop zurücksetzen
+    let mut reset_drop = false;
 
     renderer.draw_full(&game)?;
 
     loop {
-        if let Some(event) = poll_input(Duration::from_millis(1))? {
+        // Input mit kurzem Timeout
+        if let Some(event) = poll_input(Duration::from_millis(5))? {
             match game.handle_event(event) {
-                GameEvent::Quit => break,
+                GameEvent::Quit   => break,
+                GameEvent::HardDropped => {
+                    reset_drop = true;
+                }
                 GameEvent::Redraw | GameEvent::None => {}
             }
         }
 
+        if reset_drop {
+            last_drop = Instant::now();
+            reset_drop = false;
+        }
+
+        // Schwerkraft
         let drop_interval = game.drop_interval();
         if last_drop.elapsed() >= drop_interval {
             game.tick();
             last_drop = Instant::now();
         }
 
+        // Render bei ~60fps – nur dirty cells neu zeichnen
         if last_render.elapsed() >= TICK {
             renderer.draw_full(&game)?;
             last_render = Instant::now();
