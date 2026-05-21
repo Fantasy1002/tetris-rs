@@ -4,6 +4,9 @@ pub const COLS: usize = 10;
 pub const ROWS: usize = 20;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Lang { De, En }
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PieceKind { I, O, T, S, Z, J, L }
 
 impl PieceKind {
@@ -110,10 +113,11 @@ pub struct Game {
     pub game_over: bool,
     pub paused:    bool,
     pub combo:     i32,
+    pub lang:      Lang,
 }
 
 impl Game {
-    pub fn new() -> Self {
+    pub fn new(lang: Lang) -> Self {
         let mut bag = Bag::new();
         let kind = bag.next();
         Self {
@@ -122,6 +126,7 @@ impl Game {
             held: None, can_hold: true, bag,
             score: 0, lines: 0, level: 1,
             game_over: false, paused: false, combo: 0,
+            lang,
         }
     }
 
@@ -237,10 +242,7 @@ impl Game {
                         y: self.piece.y + dy,
                         ..self.piece.clone()
                     };
-                    if self.cells_valid(&p.cells()) {
-                        self.piece = p;
-                        break;
-                    }
+                    if self.cells_valid(&p.cells()) { self.piece = p; break; }
                 }
             }
             InputEvent::SoftDrop => {

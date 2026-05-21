@@ -9,9 +9,9 @@ use crossterm::{
     terminal::{enable_raw_mode, disable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     cursor::{Hide, Show},
 };
-use game::{Game, GameEvent};
+use game::{Game, GameEvent, Lang};
 use render::Renderer;
-use input::poll_input;
+use input::{poll_input, choose_language};
 
 const FRAME: Duration = Duration::from_millis(16);
 
@@ -22,14 +22,23 @@ fn main() -> io::Result<()> {
     execute!(io::stdout(), LeaveAlternateScreen, Show)?;
     disable_raw_mode()?;
     match result {
-        Ok(score) => println!("Spiel beendet! Score: {score}"),
-        Err(e)    => eprintln!("Fehler: {e}"),
+        Ok((score, lang)) => {
+            let msg = match lang {
+                Lang::De => format!("Spiel beendet! Score: {score}"),
+                Lang::En => format!("Game over! Score: {score}"),
+            };
+            println!("{msg}");
+        }
+        Err(e) => eprintln!("{e}"),
     }
     Ok(())
 }
 
-fn run_game() -> io::Result<u32> {
-    let mut game     = Game::new();
+fn run_game() -> io::Result<(u32, Lang)> {
+    // Sprachauswahl
+    let lang = choose_language()?;
+
+    let mut game     = Game::new(lang);
     let mut renderer = Renderer::new()?;
     let mut last_drop   = Instant::now();
     let mut last_render = Instant::now();
@@ -37,10 +46,9 @@ fn run_game() -> io::Result<u32> {
     renderer.draw_full(&game)?;
 
     loop {
-        // Alle Events auf einmal leeren
         while let Some(ev) = poll_input(Duration::from_millis(0))? {
             match game.handle_event(ev) {
-                GameEvent::Quit => return Ok(game.score),
+                GameEvent::Quit        => return Ok((game.score, game.lang)),
                 GameEvent::HardDropped => { last_drop = Instant::now(); }
                 GameEvent::Redraw | GameEvent::None => {}
             }
@@ -71,5 +79,5 @@ fn run_game() -> io::Result<u32> {
         std::thread::sleep(Duration::from_millis(1));
     }
 
-    Ok(game.score)
+    Ok((game.score, game.lang))
 }

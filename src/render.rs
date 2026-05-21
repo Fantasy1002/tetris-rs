@@ -5,7 +5,7 @@ use crossterm::{
     terminal::{self, Clear, ClearType},
     style::{Print, SetForegroundColor, Color, ResetColor, SetAttribute, Attribute},
 };
-use crate::game::{Game, PieceKind, COLS, ROWS};
+use crate::game::{Game, Lang, PieceKind, COLS, ROWS};
 
 const BC: u16 = 13;
 const BR: u16 = 2;
@@ -31,12 +31,12 @@ impl Renderer {
         if !self.init {
             queue!(self.out, Clear(ClearType::All))?;
             self.draw_border()?;
-            self.draw_static_labels()?;
+            self.draw_static_labels(game.lang)?;
             self.init = true;
         }
         self.draw_board(game)?;
         self.draw_dynamic_panels(game)?;
-        if game.paused && !game.is_over() { self.draw_pause()?; }
+        if game.paused && !game.is_over() { self.draw_pause(game.lang)?; }
         queue!(self.out, MoveTo(tw-1, th-1))?;
         self.out.flush()
     }
@@ -57,25 +57,58 @@ impl Renderer {
         Ok(())
     }
 
-    fn draw_static_labels(&mut self) -> io::Result<()> {
+    fn draw_static_labels(&mut self, lang: Lang) -> io::Result<()> {
         let r = BC + COLS as u16*2 + 3;
+
+        // Titel
         queue!(self.out, MoveTo(r, BR))?;
         queue!(self.out, SetAttribute(Attribute::Bold),
             SetForegroundColor(Color::Magenta), Print("TETRIS"), ResetColor)?;
+
+        // Labels je nach Sprache
+        let (score_lbl, level_lbl, lines_lbl, next_lbl, hold_lbl) = match lang {
+            Lang::De => ("PUNKTE", "LEVEL", "LINIEN", "NÄCHSTES", "HALTEN"),
+            Lang::En => ("SCORE",  "LEVEL", "LINES",  "NEXT",     "HOLD"),
+        };
+
         for (row, label) in [
-            (BR+2,"SCORE"), (BR+5,"LEVEL"), (BR+8,"LINIEN"), (BR+13,"NÄCHSTES")
+            (BR+2, score_lbl),
+            (BR+5, level_lbl),
+            (BR+8, lines_lbl),
+            (BR+13, next_lbl),
         ] {
             queue!(self.out, MoveTo(r, row))?;
             queue!(self.out, SetForegroundColor(Color::DarkGrey), Print(label), ResetColor)?;
         }
+
         queue!(self.out, MoveTo(1, BR))?;
-        queue!(self.out, SetForegroundColor(Color::DarkGrey), Print("HOLD"), ResetColor)?;
-        let controls = [
-            "← →  bewegen", "↑    drehen",  "↓    soft drop",
-            "SPC  hard drop","C    hold",    "P    pause","Q    beenden",
-        ];
+        queue!(self.out, SetForegroundColor(Color::DarkGrey), Print(hold_lbl), ResetColor)?;
+
+        // Steuerung
+        let controls: &[&str] = match lang {
+            Lang::De => &[
+                "A/←  links",
+                "D/→  rechts",
+                "W/↑  drehen",
+                "S/↓  soft drop",
+                "SPC  hard drop",
+                "C    halten",
+                "P    pause",
+                "Q    beenden",
+            ],
+            Lang::En => &[
+                "A/←  left",
+                "D/→  right",
+                "W/↑  rotate",
+                "S/↓  soft drop",
+                "SPC  hard drop",
+                "C    hold",
+                "P    pause",
+                "Q    quit",
+            ],
+        };
         for (i, line) in controls.iter().enumerate() {
-            queue!(self.out, MoveTo(1, BR+12+i as u16))?;
+            queue!(self.out, MoveTo(1, BR+11+i as u16))?;
             queue!(self.out, SetForegroundColor(Color::DarkGrey), Print(line), ResetColor)?;
         }
         Ok(())
@@ -108,15 +141,19 @@ impl Renderer {
 
     fn draw_dynamic_panels(&mut self, game: &Game) -> io::Result<()> {
         let r = BC + COLS as u16*2 + 3;
+
         queue!(self.out, MoveTo(r, BR+3))?;
         queue!(self.out, SetAttribute(Attribute::Bold), SetForegroundColor(Color::White),
             Print(format!("{:>8}", game.score)), ResetColor)?;
+
         queue!(self.out, MoveTo(r, BR+6))?;
         queue!(self.out, SetAttribute(Attribute::Bold), SetForegroundColor(Color::Cyan),
             Print(format!("{:>8}", game.level)), ResetColor)?;
+
         queue!(self.out, MoveTo(r, BR+9))?;
         queue!(self.out, SetAttribute(Attribute::Bold), SetForegroundColor(Color::Green),
             Print(format!("{:>8}", game.lines)), ResetColor)?;
+
         queue!(self.out, MoveTo(r, BR+11))?;
         if game.combo > 1 {
             queue!(self.out, SetForegroundColor(Color::Yellow),
@@ -124,8 +161,9 @@ impl Renderer {
         } else {
             queue!(self.out, Print("           "))?;
         }
+
         draw_piece_preview(&mut self.out, game.next_kind(), r, BR+14)?;
-        // Hold area leeren
+
         for i in 0..4u16 {
             queue!(self.out, MoveTo(1, BR+1+i), Print("        "))?;
         }
@@ -136,29 +174,36 @@ impl Renderer {
         Ok(())
     }
 
-    fn draw_pause(&mut self) -> io::Result<()> {
+    fn draw_pause(&mut self, lang: Lang) -> io::Result<()> {
         let cx = BC + COLS as u16 - 4;
         let cy = BR + ROWS as u16 / 2;
         queue!(self.out, MoveTo(cx, cy))?;
         queue!(self.out, SetAttribute(Attribute::Bold),
             SetForegroundColor(Color::Yellow), Print("[ PAUSE ]"), ResetColor)?;
         queue!(self.out, MoveTo(cx, cy+1))?;
-        queue!(self.out, SetForegroundColor(Color::DarkGrey), Print("P=Weiter "), ResetColor)?;
+        let msg = match lang {
+            Lang::De => "P=Weiter ",
+            Lang::En => "P=Resume ",
+        };
+        queue!(self.out, SetForegroundColor(Color::DarkGrey), Print(msg), ResetColor)?;
         Ok(())
     }
 
     pub fn draw_game_over(&mut self, game: &Game) -> io::Result<()> {
         let cx = BC + COLS as u16 - 6;
         let cy = BR + ROWS as u16 / 2 - 1;
+        let (title, score_lbl, press_lbl) = match game.lang {
+            Lang::De => ("[ GAME OVER ]", "Punkte:", "Taste drücken..."),
+            Lang::En => ("[ GAME OVER ]", "Score: ", "Press any key..."),
+        };
         queue!(self.out, MoveTo(cx, cy))?;
         queue!(self.out, SetAttribute(Attribute::Bold),
-            SetForegroundColor(Color::Red), Print("[ GAME OVER ]"), ResetColor)?;
+            SetForegroundColor(Color::Red), Print(title), ResetColor)?;
         queue!(self.out, MoveTo(cx, cy+1))?;
         queue!(self.out, SetForegroundColor(Color::White),
-            Print(format!("  Score: {:>6}", game.score)), ResetColor)?;
+            Print(format!("  {score_lbl} {:>6}", game.score)), ResetColor)?;
         queue!(self.out, MoveTo(cx, cy+3))?;
-        queue!(self.out, SetForegroundColor(Color::DarkGrey),
-            Print("Taste drücken..."), ResetColor)?;
+        queue!(self.out, SetForegroundColor(Color::DarkGrey), Print(press_lbl), ResetColor)?;
         self.out.flush()
     }
 }
