@@ -7,119 +7,98 @@ use crossterm::{
 };
 use crate::game::{Game, PieceKind, COLS, ROWS};
 
-const BOARD_COL: u16 = 14;
-const BOARD_ROW: u16 = 2;
+const BC: u16 = 13;
+const BR: u16 = 2;
 
 pub struct Renderer {
-    // BufWriter bündelt alle Writes in einen einzigen Systemaufruf → kein Flackern
-    out: BufWriter<io::Stdout>,
-    initialized: bool,
+    out:  BufWriter<io::Stdout>,
+    init: bool,
 }
 
 impl Renderer {
     pub fn new() -> io::Result<Self> {
-        Ok(Self {
-            out: BufWriter::with_capacity(8192, io::stdout()),
-            initialized: false,
-        })
+        Ok(Self { out: BufWriter::with_capacity(16384, io::stdout()), init: false })
     }
 
     pub fn draw_full(&mut self, game: &Game) -> io::Result<()> {
-        let (term_w, term_h) = terminal::size()?;
-        if term_w < 50 || term_h < 26 {
+        let (tw, th) = terminal::size()?;
+        if tw < 52 || th < 24 {
             queue!(self.out, MoveTo(0,0), Clear(ClearType::All),
-                Print("Terminal zu klein! Bitte auf min. 50x26 vergrößern."))?;
+                Print("Terminal zu klein (min. 52x24)!"))?;
             self.out.flush()?;
             return Ok(());
         }
-
-        // Nur beim ersten Frame alles löschen
-        if !self.initialized {
-            queue!(self.out, MoveTo(0,0), Clear(ClearType::All))?;
+        if !self.init {
+            queue!(self.out, Clear(ClearType::All))?;
             self.draw_border()?;
-            self.draw_controls()?;
-            self.initialized = true;
+            self.draw_static_labels()?;
+            self.init = true;
         }
-
-        // Nur das Board und Panels neu zeichnen (kein Clear!)
         self.draw_board(game)?;
-        self.draw_side_panels(game)?;
-
-        if game.paused && !game.is_over() {
-            self.draw_pause_overlay()?;
-        }
-
-        // Cursor verstecken (unten rechts parken)
-        queue!(self.out, MoveTo(term_w - 1, term_h - 1))?;
-
-        self.out.flush()?;
-        Ok(())
+        self.draw_dynamic_panels(game)?;
+        if game.paused && !game.is_over() { self.draw_pause()?; }
+        queue!(self.out, MoveTo(tw-1, th-1))?;
+        self.out.flush()
     }
 
     fn draw_border(&mut self) -> io::Result<()> {
-        queue!(self.out, MoveTo(BOARD_COL - 1, BOARD_ROW - 1))?;
-        queue!(self.out, SetAttribute(Attribute::Dim), Print("┌"), ResetColor)?;
-        for _ in 0..COLS {
-            queue!(self.out, SetAttribute(Attribute::Dim), Print("──"), ResetColor)?;
-        }
-        queue!(self.out, SetAttribute(Attribute::Dim), Print("┐"), ResetColor)?;
+        queue!(self.out, MoveTo(BC-1, BR-1))?;
+        queue!(self.out, SetAttribute(Attribute::Dim),
+            Print(format!("┌{}┐", "──".repeat(COLS))), ResetColor)?;
         for r in 0..ROWS as u16 {
-            queue!(self.out, MoveTo(BOARD_COL - 1, BOARD_ROW + r))?;
+            queue!(self.out, MoveTo(BC-1, BR+r))?;
             queue!(self.out, SetAttribute(Attribute::Dim), Print("│"), ResetColor)?;
-            queue!(self.out, MoveTo(BOARD_COL + COLS as u16 * 2, BOARD_ROW + r))?;
+            queue!(self.out, MoveTo(BC + COLS as u16*2, BR+r))?;
             queue!(self.out, SetAttribute(Attribute::Dim), Print("│"), ResetColor)?;
         }
-        queue!(self.out, MoveTo(BOARD_COL - 1, BOARD_ROW + ROWS as u16))?;
-        queue!(self.out, SetAttribute(Attribute::Dim), Print("└"), ResetColor)?;
-        for _ in 0..COLS {
-            queue!(self.out, SetAttribute(Attribute::Dim), Print("──"), ResetColor)?;
+        queue!(self.out, MoveTo(BC-1, BR+ROWS as u16))?;
+        queue!(self.out, SetAttribute(Attribute::Dim),
+            Print(format!("└{}┘", "──".repeat(COLS))), ResetColor)?;
+        Ok(())
+    }
+
+    fn draw_static_labels(&mut self) -> io::Result<()> {
+        let r = BC + COLS as u16*2 + 3;
+        queue!(self.out, MoveTo(r, BR))?;
+        queue!(self.out, SetAttribute(Attribute::Bold),
+            SetForegroundColor(Color::Magenta), Print("TETRIS"), ResetColor)?;
+        for (row, label) in [
+            (BR+2,"SCORE"), (BR+5,"LEVEL"), (BR+8,"LINIEN"), (BR+13,"NÄCHSTES")
+        ] {
+            queue!(self.out, MoveTo(r, row))?;
+            queue!(self.out, SetForegroundColor(Color::DarkGrey), Print(label), ResetColor)?;
         }
-        queue!(self.out, SetAttribute(Attribute::Dim), Print("┘"), ResetColor)?;
+        queue!(self.out, MoveTo(1, BR))?;
+        queue!(self.out, SetForegroundColor(Color::DarkGrey), Print("HOLD"), ResetColor)?;
+        let controls = [
+            "← →  bewegen", "↑    drehen",  "↓    soft drop",
+            "SPC  hard drop","C    hold",    "P    pause","Q    beenden",
+        ];
+        for (i, line) in controls.iter().enumerate() {
+            queue!(self.out, MoveTo(1, BR+12+i as u16))?;
+            queue!(self.out, SetForegroundColor(Color::DarkGrey), Print(line), ResetColor)?;
+        }
         Ok(())
     }
 
     fn draw_board(&mut self, game: &Game) -> io::Result<()> {
-        let ghost_y = game.ghost_y();
-
-        // Jede Zelle einzeln schreiben – kein Clear nötig
+        let active = game.piece.cells();
+        let ghost  = game.ghost_cells();
         for r in 0..ROWS {
             for c in 0..COLS {
-                let sx = BOARD_COL + c as u16 * 2;
-                let sy = BOARD_ROW + r as u16;
-
-                // Ist diese Zelle Teil des aktiven Pieces?
-                let is_active = (0..4).any(|pr| (0..4).any(|pc| {
-                    game.piece.shape[pr][pc]
-                        && game.piece.y + pr as i32 == r as i32
-                        && game.piece.x + pc as i32 == c as i32
-                }));
-
-                // Ist diese Zelle Ghost?
-                let is_ghost = !is_active && (0..4).any(|pr| (0..4).any(|pc| {
-                    game.piece.shape[pr][pc]
-                        && ghost_y + pr as i32 == r as i32
-                        && game.piece.x + pc as i32 == c as i32
-                }));
-
+                let sx = BC + c as u16 * 2;
+                let sy = BR + r as u16;
+                let pos = (c as i32, r as i32);
+                let is_active = active.iter().any(|&(ax,ay)| ax==pos.0 && ay==pos.1);
+                let is_ghost  = !is_active && ghost.iter().any(|&(gx,gy)| gx==pos.0 && gy==pos.1);
                 queue!(self.out, MoveTo(sx, sy))?;
-
                 if is_active {
-                    queue!(self.out,
-                        SetForegroundColor(piece_color(game.piece.kind)),
-                        Print("██"),
-                        ResetColor)?;
+                    queue!(self.out, SetForegroundColor(kind_color(game.piece.kind)), Print("██"), ResetColor)?;
                 } else if is_ghost {
-                    queue!(self.out,
-                        SetForegroundColor(Color::DarkGrey),
-                        Print("░░"),
-                        ResetColor)?;
-                } else if let Some(kind) = game.board[r][c] {
-                    queue!(self.out,
-                        SetForegroundColor(piece_color(kind)),
-                        Print("██"),
-                        ResetColor)?;
+                    queue!(self.out, SetForegroundColor(Color::DarkGrey), Print("░░"), ResetColor)?;
+                } else if let Some(k) = game.board[r][c] {
+                    queue!(self.out, SetForegroundColor(kind_color(k)), Print("██"), ResetColor)?;
                 } else {
-                    // Leere Zelle – mit Leerzeichen überschreiben
                     queue!(self.out, Print("  "))?;
                 }
             }
@@ -127,116 +106,65 @@ impl Renderer {
         Ok(())
     }
 
-    fn draw_side_panels(&mut self, game: &Game) -> io::Result<()> {
-        let right = BOARD_COL + COLS as u16 * 2 + 3;
-        let left: u16 = 1;
-
-        // Titel
-        queue!(self.out, MoveTo(right, BOARD_ROW))?;
-        queue!(self.out, SetAttribute(Attribute::Bold),
-            SetForegroundColor(Color::Magenta), Print("T E T R I S"), ResetColor)?;
-
-        // Score
-        queue!(self.out, MoveTo(right, BOARD_ROW + 2))?;
-        queue!(self.out, SetForegroundColor(Color::DarkGrey), Print("SCORE  "), ResetColor)?;
-        queue!(self.out, MoveTo(right, BOARD_ROW + 3))?;
-        queue!(self.out, SetAttribute(Attribute::Bold),
-            SetForegroundColor(Color::White),
-            Print(format!("{:>8}", game.score())),
-            ResetColor)?;
-
-        // Level
-        queue!(self.out, MoveTo(right, BOARD_ROW + 5))?;
-        queue!(self.out, SetForegroundColor(Color::DarkGrey), Print("LEVEL  "), ResetColor)?;
-        queue!(self.out, MoveTo(right, BOARD_ROW + 6))?;
-        queue!(self.out, SetAttribute(Attribute::Bold),
-            SetForegroundColor(Color::Cyan),
-            Print(format!("{:>8}", game.level)),
-            ResetColor)?;
-
-        // Linien
-        queue!(self.out, MoveTo(right, BOARD_ROW + 8))?;
-        queue!(self.out, SetForegroundColor(Color::DarkGrey), Print("LINIEN "), ResetColor)?;
-        queue!(self.out, MoveTo(right, BOARD_ROW + 9))?;
-        queue!(self.out, SetAttribute(Attribute::Bold),
-            SetForegroundColor(Color::Green),
-            Print(format!("{:>8}", game.lines)),
-            ResetColor)?;
-
-        // Combo
-        queue!(self.out, MoveTo(right, BOARD_ROW + 11))?;
+    fn draw_dynamic_panels(&mut self, game: &Game) -> io::Result<()> {
+        let r = BC + COLS as u16*2 + 3;
+        queue!(self.out, MoveTo(r, BR+3))?;
+        queue!(self.out, SetAttribute(Attribute::Bold), SetForegroundColor(Color::White),
+            Print(format!("{:>8}", game.score)), ResetColor)?;
+        queue!(self.out, MoveTo(r, BR+6))?;
+        queue!(self.out, SetAttribute(Attribute::Bold), SetForegroundColor(Color::Cyan),
+            Print(format!("{:>8}", game.level)), ResetColor)?;
+        queue!(self.out, MoveTo(r, BR+9))?;
+        queue!(self.out, SetAttribute(Attribute::Bold), SetForegroundColor(Color::Green),
+            Print(format!("{:>8}", game.lines)), ResetColor)?;
+        queue!(self.out, MoveTo(r, BR+11))?;
         if game.combo > 1 {
             queue!(self.out, SetForegroundColor(Color::Yellow),
-                Print(format!("COMBO x{:<3}", game.combo)), ResetColor)?;
+                Print(format!("COMBO x{:<4}", game.combo)), ResetColor)?;
         } else {
-            queue!(self.out, Print("          "))?;
+            queue!(self.out, Print("           "))?;
         }
-
-        // Nächstes Stück
-        queue!(self.out, MoveTo(right, BOARD_ROW + 13))?;
-        queue!(self.out, SetForegroundColor(Color::DarkGrey), Print("NÄCHSTES"), ResetColor)?;
-        draw_mini_piece(&mut self.out, game.next_kind(), right, BOARD_ROW + 14)?;
-
-        // Hold
-        queue!(self.out, MoveTo(left, BOARD_ROW))?;
-        queue!(self.out, SetForegroundColor(Color::DarkGrey), Print("HALTEN"), ResetColor)?;
-        if let Some(held) = game.held {
-            let color = if game.can_hold { piece_color(held) } else { Color::DarkGrey };
-            draw_mini_piece_color(&mut self.out, held, color, left, BOARD_ROW + 1)?;
+        draw_piece_preview(&mut self.out, game.next_kind(), r, BR+14)?;
+        // Hold area leeren
+        for i in 0..4u16 {
+            queue!(self.out, MoveTo(1, BR+1+i), Print("        "))?;
+        }
+        if let Some(h) = game.held {
+            let color = if game.can_hold { kind_color(h) } else { Color::DarkGrey };
+            draw_piece_preview_color(&mut self.out, h, color, 1, BR+1)?;
         }
         Ok(())
     }
 
-    fn draw_controls(&mut self) -> io::Result<()> {
-        let col: u16 = 1;
-        let row: u16 = BOARD_ROW + 12;
-        let controls = [
-            ("←→ ", "Bewegen  "),
-            ("↑   ", "Drehen   "),
-            ("↓   ", "Soft Drop"),
-            ("SPC ", "Hard Drop"),
-            ("C   ", "Halten   "),
-            ("P   ", "Pause    "),
-            ("Q   ", "Beenden  "),
-        ];
-        for (i, (key, action)) in controls.iter().enumerate() {
-            queue!(self.out, MoveTo(col, row + i as u16))?;
-            queue!(self.out, SetForegroundColor(Color::DarkCyan), Print(key), ResetColor)?;
-            queue!(self.out, SetForegroundColor(Color::DarkGrey), Print(action), ResetColor)?;
-        }
-        Ok(())
-    }
-
-    fn draw_pause_overlay(&mut self) -> io::Result<()> {
-        let cx = BOARD_COL + COLS as u16 - 5;
-        let cy = BOARD_ROW + ROWS as u16 / 2 - 1;
+    fn draw_pause(&mut self) -> io::Result<()> {
+        let cx = BC + COLS as u16 - 4;
+        let cy = BR + ROWS as u16 / 2;
         queue!(self.out, MoveTo(cx, cy))?;
         queue!(self.out, SetAttribute(Attribute::Bold),
-            SetForegroundColor(Color::Yellow), Print("  PAUSE  "), ResetColor)?;
-        queue!(self.out, MoveTo(cx - 1, cy + 1))?;
-        queue!(self.out, SetForegroundColor(Color::DarkGrey), Print("P = Weiter"), ResetColor)?;
+            SetForegroundColor(Color::Yellow), Print("[ PAUSE ]"), ResetColor)?;
+        queue!(self.out, MoveTo(cx, cy+1))?;
+        queue!(self.out, SetForegroundColor(Color::DarkGrey), Print("P=Weiter "), ResetColor)?;
         Ok(())
     }
 
     pub fn draw_game_over(&mut self, game: &Game) -> io::Result<()> {
-        let cx = BOARD_COL + COLS as u16 - 6;
-        let cy = BOARD_ROW + ROWS as u16 / 2 - 2;
+        let cx = BC + COLS as u16 - 6;
+        let cy = BR + ROWS as u16 / 2 - 1;
         queue!(self.out, MoveTo(cx, cy))?;
         queue!(self.out, SetAttribute(Attribute::Bold),
-            SetForegroundColor(Color::Red), Print("  GAME OVER  "), ResetColor)?;
-        queue!(self.out, MoveTo(cx, cy + 1))?;
+            SetForegroundColor(Color::Red), Print("[ GAME OVER ]"), ResetColor)?;
+        queue!(self.out, MoveTo(cx, cy+1))?;
         queue!(self.out, SetForegroundColor(Color::White),
-            Print(format!("  Score: {:>6}  ", game.score())), ResetColor)?;
-        queue!(self.out, MoveTo(cx, cy + 3))?;
+            Print(format!("  Score: {:>6}", game.score)), ResetColor)?;
+        queue!(self.out, MoveTo(cx, cy+3))?;
         queue!(self.out, SetForegroundColor(Color::DarkGrey),
             Print("Taste drücken..."), ResetColor)?;
-        self.out.flush()?;
-        Ok(())
+        self.out.flush()
     }
 }
 
-fn piece_color(kind: PieceKind) -> Color {
-    match kind {
+fn kind_color(k: PieceKind) -> Color {
+    match k {
         PieceKind::I => Color::Cyan,
         PieceKind::O => Color::Yellow,
         PieceKind::T => Color::Magenta,
@@ -247,23 +175,17 @@ fn piece_color(kind: PieceKind) -> Color {
     }
 }
 
-fn draw_mini_piece(out: &mut BufWriter<io::Stdout>, kind: PieceKind, ox: u16, oy: u16) -> io::Result<()> {
-    draw_mini_piece_color(out, kind, piece_color(kind), ox, oy)
+fn draw_piece_preview(out: &mut BufWriter<io::Stdout>, kind: PieceKind, ox: u16, oy: u16) -> io::Result<()> {
+    draw_piece_preview_color(out, kind, kind_color(kind), ox, oy)
 }
 
-fn draw_mini_piece_color(out: &mut BufWriter<io::Stdout>, kind: PieceKind, color: Color, ox: u16, oy: u16) -> io::Result<()> {
-    let shape = kind.shape();
+fn draw_piece_preview_color(out: &mut BufWriter<io::Stdout>, kind: PieceKind, color: Color, ox: u16, oy: u16) -> io::Result<()> {
     for r in 0..4u16 {
-        queue!(out, MoveTo(ox, oy + r))?;
-        queue!(out, Print("        "))?;
+        queue!(out, MoveTo(ox, oy+r), Print("        "))?;
     }
-    for r in 0..4 {
-        for c in 0..4 {
-            if shape[r][c] {
-                queue!(out, MoveTo(ox + c as u16 * 2, oy + r as u16))?;
-                queue!(out, SetForegroundColor(color), Print("██"), ResetColor)?;
-            }
-        }
+    for (cx, cy) in kind.rotations()[0] {
+        queue!(out, MoveTo(ox + cx as u16 * 2, oy + cy as u16))?;
+        queue!(out, SetForegroundColor(color), Print("██"), ResetColor)?;
     }
     Ok(())
 }
