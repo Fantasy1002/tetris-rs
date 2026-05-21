@@ -15,11 +15,11 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    pub fn new() -> crossterm::Result<Self> {
+    pub fn new() -> io::Result<Self> {
         Ok(Self { stdout: io::stdout() })
     }
 
-    pub fn draw_full(&mut self, game: &Game) -> crossterm::Result<()> {
+    pub fn draw_full(&mut self, game: &Game) -> io::Result<()> {
         let (term_w, term_h) = terminal::size()?;
         if term_w < 50 || term_h < 26 {
             queue!(self.stdout, MoveTo(0,0), Clear(ClearType::All),
@@ -37,7 +37,7 @@ impl Renderer {
         Ok(())
     }
 
-    fn draw_border(&mut self) -> crossterm::Result<()> {
+    fn draw_border(&mut self) -> io::Result<()> {
         queue!(self.stdout, MoveTo(BOARD_COL - 1, BOARD_ROW - 1))?;
         queue!(self.stdout, SetAttribute(Attribute::Dim), Print("┌"), ResetColor)?;
         for _ in 0..COLS {
@@ -59,13 +59,12 @@ impl Renderer {
         Ok(())
     }
 
-    fn draw_board(&mut self, game: &Game) -> crossterm::Result<()> {
+    fn draw_board(&mut self, game: &Game) -> io::Result<()> {
         let ghost_y = game.ghost_y();
         for r in 0..ROWS as u16 {
             queue!(self.stdout, MoveTo(BOARD_COL, BOARD_ROW + r))?;
             for _ in 0..COLS { queue!(self.stdout, Print("  "))?; }
         }
-        // Locked cells
         for r in 0..ROWS {
             for c in 0..COLS {
                 if let Some(kind) = game.board[r][c] {
@@ -74,7 +73,6 @@ impl Renderer {
                 }
             }
         }
-        // Ghost
         for r in 0..4 {
             for c in 0..4 {
                 if !game.piece.shape[r][c] { continue; }
@@ -87,7 +85,6 @@ impl Renderer {
                 }
             }
         }
-        // Active piece
         for r in 0..4 {
             for c in 0..4 {
                 if !game.piece.shape[r][c] { continue; }
@@ -101,49 +98,45 @@ impl Renderer {
         Ok(())
     }
 
-    fn draw_side_panels(&mut self, game: &Game) -> crossterm::Result<()> {
+    fn draw_side_panels(&mut self, game: &Game) -> io::Result<()> {
         let right = BOARD_COL + COLS as u16 * 2 + 3;
         let left: u16 = 1;
 
-        // Title
         queue!(self.stdout, MoveTo(right, BOARD_ROW))?;
         queue!(self.stdout, SetAttribute(Attribute::Bold),
             SetForegroundColor(Color::Magenta), Print("T E T R I S"), ResetColor)?;
 
-        // Score
         queue!(self.stdout, MoveTo(right, BOARD_ROW + 2))?;
         queue!(self.stdout, SetForegroundColor(Color::DarkGrey), Print("SCORE"), ResetColor)?;
         queue!(self.stdout, MoveTo(right, BOARD_ROW + 3))?;
         queue!(self.stdout, SetAttribute(Attribute::Bold),
-            SetForegroundColor(Color::White), Print(format!("{:>8}", game.score)), ResetColor)?;
+            SetForegroundColor(Color::White), Print(format!("{:>8}", game.score())), ResetColor)?;
 
-        // Level
         queue!(self.stdout, MoveTo(right, BOARD_ROW + 5))?;
         queue!(self.stdout, SetForegroundColor(Color::DarkGrey), Print("LEVEL"), ResetColor)?;
         queue!(self.stdout, MoveTo(right, BOARD_ROW + 6))?;
         queue!(self.stdout, SetAttribute(Attribute::Bold),
             SetForegroundColor(Color::Cyan), Print(format!("{:>8}", game.level)), ResetColor)?;
 
-        // Lines
         queue!(self.stdout, MoveTo(right, BOARD_ROW + 8))?;
         queue!(self.stdout, SetForegroundColor(Color::DarkGrey), Print("LINIEN"), ResetColor)?;
         queue!(self.stdout, MoveTo(right, BOARD_ROW + 9))?;
         queue!(self.stdout, SetAttribute(Attribute::Bold),
             SetForegroundColor(Color::Green), Print(format!("{:>8}", game.lines)), ResetColor)?;
 
-        // Combo
         if game.combo > 1 {
             queue!(self.stdout, MoveTo(right, BOARD_ROW + 11))?;
             queue!(self.stdout, SetForegroundColor(Color::Yellow),
                 Print(format!("COMBO x{}", game.combo)), ResetColor)?;
+        } else {
+            queue!(self.stdout, MoveTo(right, BOARD_ROW + 11))?;
+            queue!(self.stdout, Print("          "))?;
         }
 
-        // Next piece
         queue!(self.stdout, MoveTo(right, BOARD_ROW + 13))?;
         queue!(self.stdout, SetForegroundColor(Color::DarkGrey), Print("NÄCHSTES"), ResetColor)?;
         draw_mini_piece(&mut self.stdout, game.next_kind(), right, BOARD_ROW + 14)?;
 
-        // Hold
         queue!(self.stdout, MoveTo(left, BOARD_ROW))?;
         queue!(self.stdout, SetForegroundColor(Color::DarkGrey), Print("HALTEN"), ResetColor)?;
         if let Some(held) = game.held {
@@ -153,7 +146,7 @@ impl Renderer {
         Ok(())
     }
 
-    fn draw_controls(&mut self) -> crossterm::Result<()> {
+    fn draw_controls(&mut self) -> io::Result<()> {
         let col: u16 = 1;
         let row: u16 = BOARD_ROW + 12;
         let controls = [
@@ -173,7 +166,7 @@ impl Renderer {
         Ok(())
     }
 
-    fn draw_pause_overlay(&mut self) -> crossterm::Result<()> {
+    fn draw_pause_overlay(&mut self) -> io::Result<()> {
         let cx = BOARD_COL + COLS as u16 - 5;
         let cy = BOARD_ROW + ROWS as u16 / 2 - 1;
         queue!(self.stdout, MoveTo(cx, cy))?;
@@ -184,7 +177,7 @@ impl Renderer {
         Ok(())
     }
 
-    pub fn draw_game_over(&mut self, game: &Game) -> crossterm::Result<()> {
+    pub fn draw_game_over(&mut self, game: &Game) -> io::Result<()> {
         let cx = BOARD_COL + COLS as u16 - 6;
         let cy = BOARD_ROW + ROWS as u16 / 2 - 2;
         queue!(self.stdout, MoveTo(cx, cy))?;
@@ -192,7 +185,7 @@ impl Renderer {
             SetForegroundColor(Color::Red), Print("  GAME OVER  "), ResetColor)?;
         queue!(self.stdout, MoveTo(cx, cy + 1))?;
         queue!(self.stdout, SetForegroundColor(Color::White),
-            Print(format!("  Score: {:>6}  ", game.score)), ResetColor)?;
+            Print(format!("  Score: {:>6}  ", game.score())), ResetColor)?;
         queue!(self.stdout, MoveTo(cx, cy + 3))?;
         queue!(self.stdout, SetForegroundColor(Color::DarkGrey),
             Print("Taste drücken..."), ResetColor)?;
@@ -213,11 +206,11 @@ fn piece_color(kind: PieceKind) -> Color {
     }
 }
 
-fn draw_mini_piece(stdout: &mut io::Stdout, kind: PieceKind, ox: u16, oy: u16) -> crossterm::Result<()> {
+fn draw_mini_piece(stdout: &mut io::Stdout, kind: PieceKind, ox: u16, oy: u16) -> io::Result<()> {
     draw_mini_piece_color(stdout, kind, piece_color(kind), ox, oy)
 }
 
-fn draw_mini_piece_color(stdout: &mut io::Stdout, kind: PieceKind, color: Color, ox: u16, oy: u16) -> crossterm::Result<()> {
+fn draw_mini_piece_color(stdout: &mut io::Stdout, kind: PieceKind, color: Color, ox: u16, oy: u16) -> io::Result<()> {
     let shape = kind.shape();
     for r in 0..4u16 {
         queue!(stdout, MoveTo(ox, oy + r))?;

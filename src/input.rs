@@ -1,8 +1,9 @@
+use std::io;
 use std::time::Duration;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crate::game::InputEvent;
 
-pub fn poll_input(timeout: Duration) -> crossterm::Result<Option<InputEvent>> {
+pub fn poll_input(timeout: Duration) -> io::Result<Option<InputEvent>> {
     if !event::poll(timeout)? { return Ok(None); }
     match event::read()? {
         Event::Key(KeyEvent { code, modifiers, .. }) => {

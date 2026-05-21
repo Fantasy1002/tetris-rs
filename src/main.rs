@@ -2,6 +2,7 @@ mod game;
 mod render;
 mod input;
 
+use std::io;
 use std::time::{Duration, Instant};
 use crossterm::{
     execute,
@@ -14,13 +15,13 @@ use input::poll_input;
 
 const TICK: Duration = Duration::from_millis(16);
 
-fn main() -> crossterm::Result<()> {
+fn main() -> io::Result<()> {
     enable_raw_mode()?;
-    execute!(std::io::stdout(), EnterAlternateScreen, Hide)?;
+    execute!(io::stdout(), EnterAlternateScreen, Hide)?;
 
     let result = run_game();
 
-    execute!(std::io::stdout(), LeaveAlternateScreen, Show)?;
+    execute!(io::stdout(), LeaveAlternateScreen, Show)?;
     disable_raw_mode()?;
 
     match result {
@@ -30,7 +31,7 @@ fn main() -> crossterm::Result<()> {
     Ok(())
 }
 
-fn run_game() -> crossterm::Result<u32> {
+fn run_game() -> io::Result<u32> {
     let mut game = Game::new();
     let mut renderer = Renderer::new()?;
     let mut last_drop = Instant::now();
