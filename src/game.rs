@@ -88,9 +88,7 @@ impl Piece {
     }
 }
 
-struct Bag {
-    queue: Vec<PieceKind>,
-}
+struct Bag { queue: Vec<PieceKind> }
 
 impl Bag {
     fn new() -> Self {
@@ -98,37 +96,34 @@ impl Bag {
         b.refill();
         b
     }
-
     fn refill(&mut self) {
         let mut pieces: Vec<PieceKind> = PieceKind::all().to_vec();
         pieces.shuffle(&mut thread_rng());
         self.queue.extend(pieces);
     }
-
     fn next(&mut self) -> PieceKind {
         if self.queue.len() < 2 { self.refill(); }
         self.queue.remove(0)
     }
-
     fn peek(&self) -> PieceKind { self.queue[0] }
 }
 
 pub type Board = [[Option<PieceKind>; COLS]; ROWS];
 
-pub enum GameEvent { None, Redraw, Quit }
+pub enum GameEvent { None, Redraw, HardDropped, Quit }
 
 pub struct Game {
-    pub board:      Board,
-    pub piece:      Piece,
-    pub held:       Option<PieceKind>,
-    pub can_hold:   bool,
-    bag:            Bag,
-    score:          u32,
-    pub lines:      u32,
-    pub level:      u32,
-    pub game_over:  bool,
-    pub paused:     bool,
-    pub combo:      i32,
+    pub board:    Board,
+    pub piece:    Piece,
+    pub held:     Option<PieceKind>,
+    pub can_hold: bool,
+    bag:          Bag,
+    score:        u32,
+    pub lines:    u32,
+    pub level:    u32,
+    pub game_over: bool,
+    pub paused:   bool,
+    pub combo:    i32,
 }
 
 impl Game {
@@ -236,10 +231,14 @@ impl Game {
         if self.game_over { return GameEvent::None; }
         match ev {
             InputEvent::Quit  => return GameEvent::Quit,
-            InputEvent::Pause => { self.paused = !self.paused; return GameEvent::Redraw; }
+            InputEvent::Pause => {
+                self.paused = !self.paused;
+                return GameEvent::Redraw;
+            }
             _ => {}
         }
         if self.paused { return GameEvent::None; }
+
         match ev {
             InputEvent::Left => {
                 if self.is_valid(&self.piece.shape, self.piece.x - 1, self.piece.y) {
@@ -252,11 +251,23 @@ impl Game {
                 }
             }
             InputEvent::RotateCW => {
+                // SRS Wall Kicks: 0, -1, +1, -2, +2
                 let rotated = self.piece.rotated_cw();
-                for dx in [0i32, -1, 1, -2, 2] {
+                let kicks: &[i32] = match self.piece.kind {
+                    PieceKind::I => &[0, -2, 1, -3, 2],
+                    _            => &[0, -1, 1, -2, 2],
+                };
+                for &dx in kicks {
                     if self.is_valid(&rotated, self.piece.x + dx, self.piece.y) {
                         self.piece.shape = rotated;
                         self.piece.x += dx;
+                        break;
+                    }
+                    // Auch einen Tick nach oben versuchen (für enge Stellen)
+                    if self.is_valid(&rotated, self.piece.x + dx, self.piece.y - 1) {
+                        self.piece.shape = rotated;
+                        self.piece.x += dx;
+                        self.piece.y -= 1;
                         break;
                     }
                 }
@@ -272,6 +283,7 @@ impl Game {
                 self.score += 2 * (gy - self.piece.y) as u32;
                 self.piece.y = gy;
                 self.lock_piece();
+                return GameEvent::HardDropped; // Drop-Timer zurücksetzen!
             }
             InputEvent::Hold => {
                 if self.can_hold {
