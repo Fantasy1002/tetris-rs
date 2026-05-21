@@ -39,7 +39,7 @@ A fully-featured terminal Tetris game written in Rust. Runs entirely in your ter
 ### Option 1 — Clone and run directly
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/tetris-rs.git
+git clone https://github.com/Fantasy102/tetris-rs.git
 cd tetris-rs
 cargo run --release
 ```
