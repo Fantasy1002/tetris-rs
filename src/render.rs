@@ -1,4 +1,4 @@
-use std::io::{self, Write};
+use std::io::{self, Write, BufWriter};
 use crossterm::{
     cursor::MoveTo,
     queue,
@@ -11,88 +11,117 @@ const BOARD_COL: u16 = 14;
 const BOARD_ROW: u16 = 2;
 
 pub struct Renderer {
-    stdout: io::Stdout,
+    // BufWriter bündelt alle Writes in einen einzigen Systemaufruf → kein Flackern
+    out: BufWriter<io::Stdout>,
+    initialized: bool,
 }
 
 impl Renderer {
     pub fn new() -> io::Result<Self> {
-        Ok(Self { stdout: io::stdout() })
+        Ok(Self {
+            out: BufWriter::with_capacity(8192, io::stdout()),
+            initialized: false,
+        })
     }
 
     pub fn draw_full(&mut self, game: &Game) -> io::Result<()> {
         let (term_w, term_h) = terminal::size()?;
         if term_w < 50 || term_h < 26 {
-            queue!(self.stdout, MoveTo(0,0), Clear(ClearType::All),
+            queue!(self.out, MoveTo(0,0), Clear(ClearType::All),
                 Print("Terminal zu klein! Bitte auf min. 50x26 vergrößern."))?;
-            self.stdout.flush()?;
+            self.out.flush()?;
             return Ok(());
         }
-        queue!(self.stdout, MoveTo(0,0), Clear(ClearType::All))?;
-        self.draw_border()?;
+
+        // Nur beim ersten Frame alles löschen
+        if !self.initialized {
+            queue!(self.out, MoveTo(0,0), Clear(ClearType::All))?;
+            self.draw_border()?;
+            self.draw_controls()?;
+            self.initialized = true;
+        }
+
+        // Nur das Board und Panels neu zeichnen (kein Clear!)
         self.draw_board(game)?;
         self.draw_side_panels(game)?;
-        self.draw_controls()?;
-        if game.paused && !game.is_over() { self.draw_pause_overlay()?; }
-        self.stdout.flush()?;
+
+        if game.paused && !game.is_over() {
+            self.draw_pause_overlay()?;
+        }
+
+        // Cursor verstecken (unten rechts parken)
+        queue!(self.out, MoveTo(term_w - 1, term_h - 1))?;
+
+        self.out.flush()?;
         Ok(())
     }
 
     fn draw_border(&mut self) -> io::Result<()> {
-        queue!(self.stdout, MoveTo(BOARD_COL - 1, BOARD_ROW - 1))?;
-        queue!(self.stdout, SetAttribute(Attribute::Dim), Print("┌"), ResetColor)?;
+        queue!(self.out, MoveTo(BOARD_COL - 1, BOARD_ROW - 1))?;
+        queue!(self.out, SetAttribute(Attribute::Dim), Print("┌"), ResetColor)?;
         for _ in 0..COLS {
-            queue!(self.stdout, SetAttribute(Attribute::Dim), Print("──"), ResetColor)?;
+            queue!(self.out, SetAttribute(Attribute::Dim), Print("──"), ResetColor)?;
         }
-        queue!(self.stdout, SetAttribute(Attribute::Dim), Print("┐"), ResetColor)?;
+        queue!(self.out, SetAttribute(Attribute::Dim), Print("┐"), ResetColor)?;
         for r in 0..ROWS as u16 {
-            queue!(self.stdout, MoveTo(BOARD_COL - 1, BOARD_ROW + r))?;
-            queue!(self.stdout, SetAttribute(Attribute::Dim), Print("│"), ResetColor)?;
-            queue!(self.stdout, MoveTo(BOARD_COL + COLS as u16 * 2, BOARD_ROW + r))?;
-            queue!(self.stdout, SetAttribute(Attribute::Dim), Print("│"), ResetColor)?;
+            queue!(self.out, MoveTo(BOARD_COL - 1, BOARD_ROW + r))?;
+            queue!(self.out, SetAttribute(Attribute::Dim), Print("│"), ResetColor)?;
+            queue!(self.out, MoveTo(BOARD_COL + COLS as u16 * 2, BOARD_ROW + r))?;
+            queue!(self.out, SetAttribute(Attribute::Dim), Print("│"), ResetColor)?;
         }
-        queue!(self.stdout, MoveTo(BOARD_COL - 1, BOARD_ROW + ROWS as u16))?;
-        queue!(self.stdout, SetAttribute(Attribute::Dim), Print("└"), ResetColor)?;
+        queue!(self.out, MoveTo(BOARD_COL - 1, BOARD_ROW + ROWS as u16))?;
+        queue!(self.out, SetAttribute(Attribute::Dim), Print("└"), ResetColor)?;
         for _ in 0..COLS {
-            queue!(self.stdout, SetAttribute(Attribute::Dim), Print("──"), ResetColor)?;
+            queue!(self.out, SetAttribute(Attribute::Dim), Print("──"), ResetColor)?;
         }
-        queue!(self.stdout, SetAttribute(Attribute::Dim), Print("┘"), ResetColor)?;
+        queue!(self.out, SetAttribute(Attribute::Dim), Print("┘"), ResetColor)?;
         Ok(())
     }
 
     fn draw_board(&mut self, game: &Game) -> io::Result<()> {
         let ghost_y = game.ghost_y();
-        for r in 0..ROWS as u16 {
-            queue!(self.stdout, MoveTo(BOARD_COL, BOARD_ROW + r))?;
-            for _ in 0..COLS { queue!(self.stdout, Print("  "))?; }
-        }
+
+        // Jede Zelle einzeln schreiben – kein Clear nötig
         for r in 0..ROWS {
             for c in 0..COLS {
-                if let Some(kind) = game.board[r][c] {
-                    queue!(self.stdout, MoveTo(BOARD_COL + c as u16 * 2, BOARD_ROW + r as u16))?;
-                    queue!(self.stdout, SetForegroundColor(piece_color(kind)), Print("██"), ResetColor)?;
+                let sx = BOARD_COL + c as u16 * 2;
+                let sy = BOARD_ROW + r as u16;
+
+                // Ist diese Zelle Teil des aktiven Pieces?
+                let is_active = (0..4).any(|pr| (0..4).any(|pc| {
+                    game.piece.shape[pr][pc]
+                        && game.piece.y + pr as i32 == r as i32
+                        && game.piece.x + pc as i32 == c as i32
+                }));
+
+                // Ist diese Zelle Ghost?
+                let is_ghost = !is_active && (0..4).any(|pr| (0..4).any(|pc| {
+                    game.piece.shape[pr][pc]
+                        && ghost_y + pr as i32 == r as i32
+                        && game.piece.x + pc as i32 == c as i32
+                }));
+
+                queue!(self.out, MoveTo(sx, sy))?;
+
+                if is_active {
+                    queue!(self.out,
+                        SetForegroundColor(piece_color(game.piece.kind)),
+                        Print("██"),
+                        ResetColor)?;
+                } else if is_ghost {
+                    queue!(self.out,
+                        SetForegroundColor(Color::DarkGrey),
+                        Print("░░"),
+                        ResetColor)?;
+                } else if let Some(kind) = game.board[r][c] {
+                    queue!(self.out,
+                        SetForegroundColor(piece_color(kind)),
+                        Print("██"),
+                        ResetColor)?;
+                } else {
+                    // Leere Zelle – mit Leerzeichen überschreiben
+                    queue!(self.out, Print("  "))?;
                 }
-            }
-        }
-        for r in 0..4 {
-            for c in 0..4 {
-                if !game.piece.shape[r][c] { continue; }
-                let py = ghost_y + r as i32;
-                let px = game.piece.x + c as i32;
-                if py < 0 || py >= ROWS as i32 || px < 0 || px >= COLS as i32 { continue; }
-                if py != game.piece.y + r as i32 {
-                    queue!(self.stdout, MoveTo(BOARD_COL + px as u16 * 2, BOARD_ROW + py as u16))?;
-                    queue!(self.stdout, SetForegroundColor(Color::DarkGrey), Print("░░"), ResetColor)?;
-                }
-            }
-        }
-        for r in 0..4 {
-            for c in 0..4 {
-                if !game.piece.shape[r][c] { continue; }
-                let py = game.piece.y + r as i32;
-                let px = game.piece.x + c as i32;
-                if py < 0 || py >= ROWS as i32 || px < 0 || px >= COLS as i32 { continue; }
-                queue!(self.stdout, MoveTo(BOARD_COL + px as u16 * 2, BOARD_ROW + py as u16))?;
-                queue!(self.stdout, SetForegroundColor(piece_color(game.piece.kind)), Print("██"), ResetColor)?;
             }
         }
         Ok(())
@@ -102,46 +131,58 @@ impl Renderer {
         let right = BOARD_COL + COLS as u16 * 2 + 3;
         let left: u16 = 1;
 
-        queue!(self.stdout, MoveTo(right, BOARD_ROW))?;
-        queue!(self.stdout, SetAttribute(Attribute::Bold),
+        // Titel
+        queue!(self.out, MoveTo(right, BOARD_ROW))?;
+        queue!(self.out, SetAttribute(Attribute::Bold),
             SetForegroundColor(Color::Magenta), Print("T E T R I S"), ResetColor)?;
 
-        queue!(self.stdout, MoveTo(right, BOARD_ROW + 2))?;
-        queue!(self.stdout, SetForegroundColor(Color::DarkGrey), Print("SCORE"), ResetColor)?;
-        queue!(self.stdout, MoveTo(right, BOARD_ROW + 3))?;
-        queue!(self.stdout, SetAttribute(Attribute::Bold),
-            SetForegroundColor(Color::White), Print(format!("{:>8}", game.score())), ResetColor)?;
+        // Score
+        queue!(self.out, MoveTo(right, BOARD_ROW + 2))?;
+        queue!(self.out, SetForegroundColor(Color::DarkGrey), Print("SCORE  "), ResetColor)?;
+        queue!(self.out, MoveTo(right, BOARD_ROW + 3))?;
+        queue!(self.out, SetAttribute(Attribute::Bold),
+            SetForegroundColor(Color::White),
+            Print(format!("{:>8}", game.score())),
+            ResetColor)?;
 
-        queue!(self.stdout, MoveTo(right, BOARD_ROW + 5))?;
-        queue!(self.stdout, SetForegroundColor(Color::DarkGrey), Print("LEVEL"), ResetColor)?;
-        queue!(self.stdout, MoveTo(right, BOARD_ROW + 6))?;
-        queue!(self.stdout, SetAttribute(Attribute::Bold),
-            SetForegroundColor(Color::Cyan), Print(format!("{:>8}", game.level)), ResetColor)?;
+        // Level
+        queue!(self.out, MoveTo(right, BOARD_ROW + 5))?;
+        queue!(self.out, SetForegroundColor(Color::DarkGrey), Print("LEVEL  "), ResetColor)?;
+        queue!(self.out, MoveTo(right, BOARD_ROW + 6))?;
+        queue!(self.out, SetAttribute(Attribute::Bold),
+            SetForegroundColor(Color::Cyan),
+            Print(format!("{:>8}", game.level)),
+            ResetColor)?;
 
-        queue!(self.stdout, MoveTo(right, BOARD_ROW + 8))?;
-        queue!(self.stdout, SetForegroundColor(Color::DarkGrey), Print("LINIEN"), ResetColor)?;
-        queue!(self.stdout, MoveTo(right, BOARD_ROW + 9))?;
-        queue!(self.stdout, SetAttribute(Attribute::Bold),
-            SetForegroundColor(Color::Green), Print(format!("{:>8}", game.lines)), ResetColor)?;
+        // Linien
+        queue!(self.out, MoveTo(right, BOARD_ROW + 8))?;
+        queue!(self.out, SetForegroundColor(Color::DarkGrey), Print("LINIEN "), ResetColor)?;
+        queue!(self.out, MoveTo(right, BOARD_ROW + 9))?;
+        queue!(self.out, SetAttribute(Attribute::Bold),
+            SetForegroundColor(Color::Green),
+            Print(format!("{:>8}", game.lines)),
+            ResetColor)?;
 
+        // Combo
+        queue!(self.out, MoveTo(right, BOARD_ROW + 11))?;
         if game.combo > 1 {
-            queue!(self.stdout, MoveTo(right, BOARD_ROW + 11))?;
-            queue!(self.stdout, SetForegroundColor(Color::Yellow),
-                Print(format!("COMBO x{}", game.combo)), ResetColor)?;
+            queue!(self.out, SetForegroundColor(Color::Yellow),
+                Print(format!("COMBO x{:<3}", game.combo)), ResetColor)?;
         } else {
-            queue!(self.stdout, MoveTo(right, BOARD_ROW + 11))?;
-            queue!(self.stdout, Print("          "))?;
+            queue!(self.out, Print("          "))?;
         }
 
-        queue!(self.stdout, MoveTo(right, BOARD_ROW + 13))?;
-        queue!(self.stdout, SetForegroundColor(Color::DarkGrey), Print("NÄCHSTES"), ResetColor)?;
-        draw_mini_piece(&mut self.stdout, game.next_kind(), right, BOARD_ROW + 14)?;
+        // Nächstes Stück
+        queue!(self.out, MoveTo(right, BOARD_ROW + 13))?;
+        queue!(self.out, SetForegroundColor(Color::DarkGrey), Print("NÄCHSTES"), ResetColor)?;
+        draw_mini_piece(&mut self.out, game.next_kind(), right, BOARD_ROW + 14)?;
 
-        queue!(self.stdout, MoveTo(left, BOARD_ROW))?;
-        queue!(self.stdout, SetForegroundColor(Color::DarkGrey), Print("HALTEN"), ResetColor)?;
+        // Hold
+        queue!(self.out, MoveTo(left, BOARD_ROW))?;
+        queue!(self.out, SetForegroundColor(Color::DarkGrey), Print("HALTEN"), ResetColor)?;
         if let Some(held) = game.held {
             let color = if game.can_hold { piece_color(held) } else { Color::DarkGrey };
-            draw_mini_piece_color(&mut self.stdout, held, color, left, BOARD_ROW + 1)?;
+            draw_mini_piece_color(&mut self.out, held, color, left, BOARD_ROW + 1)?;
         }
         Ok(())
     }
@@ -150,18 +191,18 @@ impl Renderer {
         let col: u16 = 1;
         let row: u16 = BOARD_ROW + 12;
         let controls = [
-            ("←→ ", "Bewegen"),
-            ("↑   ", "Drehen"),
+            ("←→ ", "Bewegen  "),
+            ("↑   ", "Drehen   "),
             ("↓   ", "Soft Drop"),
             ("SPC ", "Hard Drop"),
-            ("C   ", "Halten"),
-            ("P   ", "Pause"),
-            ("Q   ", "Beenden"),
+            ("C   ", "Halten   "),
+            ("P   ", "Pause    "),
+            ("Q   ", "Beenden  "),
         ];
         for (i, (key, action)) in controls.iter().enumerate() {
-            queue!(self.stdout, MoveTo(col, row + i as u16))?;
-            queue!(self.stdout, SetForegroundColor(Color::DarkCyan), Print(key), ResetColor)?;
-            queue!(self.stdout, SetForegroundColor(Color::DarkGrey), Print(action), ResetColor)?;
+            queue!(self.out, MoveTo(col, row + i as u16))?;
+            queue!(self.out, SetForegroundColor(Color::DarkCyan), Print(key), ResetColor)?;
+            queue!(self.out, SetForegroundColor(Color::DarkGrey), Print(action), ResetColor)?;
         }
         Ok(())
     }
@@ -169,27 +210,27 @@ impl Renderer {
     fn draw_pause_overlay(&mut self) -> io::Result<()> {
         let cx = BOARD_COL + COLS as u16 - 5;
         let cy = BOARD_ROW + ROWS as u16 / 2 - 1;
-        queue!(self.stdout, MoveTo(cx, cy))?;
-        queue!(self.stdout, SetAttribute(Attribute::Bold),
+        queue!(self.out, MoveTo(cx, cy))?;
+        queue!(self.out, SetAttribute(Attribute::Bold),
             SetForegroundColor(Color::Yellow), Print("  PAUSE  "), ResetColor)?;
-        queue!(self.stdout, MoveTo(cx - 1, cy + 1))?;
-        queue!(self.stdout, SetForegroundColor(Color::DarkGrey), Print("P = Weiter"), ResetColor)?;
+        queue!(self.out, MoveTo(cx - 1, cy + 1))?;
+        queue!(self.out, SetForegroundColor(Color::DarkGrey), Print("P = Weiter"), ResetColor)?;
         Ok(())
     }
 
     pub fn draw_game_over(&mut self, game: &Game) -> io::Result<()> {
         let cx = BOARD_COL + COLS as u16 - 6;
         let cy = BOARD_ROW + ROWS as u16 / 2 - 2;
-        queue!(self.stdout, MoveTo(cx, cy))?;
-        queue!(self.stdout, SetAttribute(Attribute::Bold),
+        queue!(self.out, MoveTo(cx, cy))?;
+        queue!(self.out, SetAttribute(Attribute::Bold),
             SetForegroundColor(Color::Red), Print("  GAME OVER  "), ResetColor)?;
-        queue!(self.stdout, MoveTo(cx, cy + 1))?;
-        queue!(self.stdout, SetForegroundColor(Color::White),
+        queue!(self.out, MoveTo(cx, cy + 1))?;
+        queue!(self.out, SetForegroundColor(Color::White),
             Print(format!("  Score: {:>6}  ", game.score())), ResetColor)?;
-        queue!(self.stdout, MoveTo(cx, cy + 3))?;
-        queue!(self.stdout, SetForegroundColor(Color::DarkGrey),
+        queue!(self.out, MoveTo(cx, cy + 3))?;
+        queue!(self.out, SetForegroundColor(Color::DarkGrey),
             Print("Taste drücken..."), ResetColor)?;
-        self.stdout.flush()?;
+        self.out.flush()?;
         Ok(())
     }
 }
@@ -206,21 +247,21 @@ fn piece_color(kind: PieceKind) -> Color {
     }
 }
 
-fn draw_mini_piece(stdout: &mut io::Stdout, kind: PieceKind, ox: u16, oy: u16) -> io::Result<()> {
-    draw_mini_piece_color(stdout, kind, piece_color(kind), ox, oy)
+fn draw_mini_piece(out: &mut BufWriter<io::Stdout>, kind: PieceKind, ox: u16, oy: u16) -> io::Result<()> {
+    draw_mini_piece_color(out, kind, piece_color(kind), ox, oy)
 }
 
-fn draw_mini_piece_color(stdout: &mut io::Stdout, kind: PieceKind, color: Color, ox: u16, oy: u16) -> io::Result<()> {
+fn draw_mini_piece_color(out: &mut BufWriter<io::Stdout>, kind: PieceKind, color: Color, ox: u16, oy: u16) -> io::Result<()> {
     let shape = kind.shape();
     for r in 0..4u16 {
-        queue!(stdout, MoveTo(ox, oy + r))?;
-        queue!(stdout, Print("        "))?;
+        queue!(out, MoveTo(ox, oy + r))?;
+        queue!(out, Print("        "))?;
     }
     for r in 0..4 {
         for c in 0..4 {
             if shape[r][c] {
-                queue!(stdout, MoveTo(ox + c as u16 * 2, oy + r as u16))?;
-                queue!(stdout, SetForegroundColor(color), Print("██"), ResetColor)?;
+                queue!(out, MoveTo(ox + c as u16 * 2, oy + r as u16))?;
+                queue!(out, SetForegroundColor(color), Print("██"), ResetColor)?;
             }
         }
     }
