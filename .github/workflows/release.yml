@@ -1,0 +1,80 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          # Windows
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary: tetris.exe
+            asset_name: tetris-windows-x86_64.exe
+
+          # Linux (glibc - Ubuntu, Debian, Fedora, Arch usw.)
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary: tetris
+            asset_name: tetris-linux-x86_64
+
+          # Linux MUSL (statisch - läuft auf JEDEM Linux, auch Alpine)
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            binary: tetris
+            asset_name: tetris-linux-x86_64-musl
+
+          # macOS Intel
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            binary: tetris
+            asset_name: tetris-macos-x86_64
+
+          # macOS Apple Silicon (M1/M2/M3)
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            binary: tetris
+            asset_name: tetris-macos-arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # MUSL braucht einen extra Linker
+      - name: Install MUSL tools (Linux only)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get install -y musl-tools
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      # Binary umbenennen und in den Upload-Ordner legen
+      - name: Prepare binary (Unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          cp target/${{ matrix.target }}/release/${{ matrix.binary }} ${{ matrix.asset_name }}
+          chmod +x ${{ matrix.asset_name }}
+
+      - name: Prepare binary (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.binary }}" "${{ matrix.asset_name }}"
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.asset_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
