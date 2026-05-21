@@ -11,7 +11,6 @@ impl PieceKind {
         [Self::I, Self::O, Self::T, Self::S, Self::Z, Self::J, Self::L]
     }
 
-    // Alle 4 Rotationen als feste Koordinaten (kein algorithmisches Drehen)
     pub fn rotations(self) -> [[(i32, i32); 4]; 4] {
         match self {
             Self::I => [
@@ -87,7 +86,6 @@ impl Piece {
     pub fn new(kind: PieceKind) -> Self {
         Self { kind, rotation: 0, x: 3, y: 0 }
     }
-
     pub fn cells(&self) -> [(i32, i32); 4] {
         let mut out = [(0i32, 0i32); 4];
         for (i, &(cx, cy)) in self.kind.rotations()[self.rotation].iter().enumerate() {
@@ -210,7 +208,6 @@ impl Game {
             _ => {}
         }
         if self.paused { return GameEvent::None; }
-
         match ev {
             InputEvent::Left => {
                 let p = Piece { x: self.piece.x - 1, ..self.piece.clone() };
@@ -222,4 +219,61 @@ impl Game {
             }
             InputEvent::RotateCW => {
                 let next_rot = (self.piece.rotation + 1) % 4;
-                //
+                let kicks: &[(i32, i32)] = match (self.piece.kind, self.piece.rotation) {
+                    (PieceKind::I, 0) => &[(0,0),(-2,0),(1,0),(-2,-1),(1,2)],
+                    (PieceKind::I, 1) => &[(0,0),(-1,0),(2,0),(-1,2),(2,-1)],
+                    (PieceKind::I, 2) => &[(0,0),(2,0),(-1,0),(2,1),(-1,-2)],
+                    (PieceKind::I, 3) => &[(0,0),(1,0),(-2,0),(1,-2),(-2,1)],
+                    (_, 0) => &[(0,0),(-1,0),(-1,1),(0,-2),(-1,-2)],
+                    (_, 1) => &[(0,0),(1,0),(1,-1),(0,2),(1,2)],
+                    (_, 2) => &[(0,0),(1,0),(1,1),(0,-2),(1,-2)],
+                    (_, 3) => &[(0,0),(-1,0),(-1,-1),(0,2),(-1,2)],
+                    _      => &[(0,0)],
+                };
+                for &(dx, dy) in kicks {
+                    let p = Piece {
+                        rotation: next_rot,
+                        x: self.piece.x + dx,
+                        y: self.piece.y + dy,
+                        ..self.piece.clone()
+                    };
+                    if self.cells_valid(&p.cells()) {
+                        self.piece = p;
+                        break;
+                    }
+                }
+            }
+            InputEvent::SoftDrop => {
+                let p = Piece { y: self.piece.y + 1, ..self.piece.clone() };
+                if self.cells_valid(&p.cells()) { self.piece.y += 1; self.score += 1; }
+            }
+            InputEvent::HardDrop => {
+                let gy = self.ghost_y();
+                self.score += 2 * (gy - self.piece.y) as u32;
+                self.piece.y = gy;
+                self.lock_piece();
+                return GameEvent::HardDropped;
+            }
+            InputEvent::Hold => {
+                if self.can_hold {
+                    let cur = self.piece.kind;
+                    match self.held {
+                        None => { self.held = Some(cur); self.spawn_next(); }
+                        Some(prev) => {
+                            self.held = Some(cur);
+                            let p = Piece::new(prev);
+                            if !self.cells_valid(&p.cells()) { self.game_over = true; }
+                            else { self.piece = p; }
+                        }
+                    }
+                    self.can_hold = false;
+                }
+            }
+            _ => {}
+        }
+        GameEvent::Redraw
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum InputEvent { Left, Right, RotateCW, SoftDrop, HardDrop, Hold, Pause, Quit }
