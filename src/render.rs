@@ -27,7 +27,7 @@ pub struct Renderer {
 
 impl Renderer {
     pub fn new() -> io::Result<Self> {
-        let (tw, th) = terminal::size().unwrap_or((80, 24));
+        let (_tw, _th) = terminal::size().unwrap_or((80, 24));
         Ok(Self {
             out: BufWriter::with_capacity(16384, io::stdout()),
             last_tw: 0,   // 0 erzwingt vollständigen Redraw beim ersten Frame
