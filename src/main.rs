@@ -71,7 +71,11 @@ fn run_game() -> io::Result<(u32, Lang)> {
             renderer.draw_full(&game)?;
             renderer.draw_game_over(&game)?;
             loop {
-                if poll_input(Duration::from_millis(100))?.is_some() { break; }
+                match poll_input(Duration::from_millis(100)) {
+                    Ok(Some(_)) => break,
+                    Err(_) => continue,
+                    Ok(None) => {}
+                }
             }
             break;
         }
